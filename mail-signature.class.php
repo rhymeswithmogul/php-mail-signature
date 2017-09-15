@@ -32,7 +32,7 @@
  * 
  * @link https://github.com/louisameline/php-mail-signature
  * @author Louis Ameline
- * @version 1.0.3
+ * @version 1.1
  */
 
 /*
@@ -151,7 +151,15 @@ class mail_signature {
 				'to',
 				'subject',
 				'reply-to'
-			)
+			),
+			/*
+     			 * Specify which hash function to use with DKIM.  "sha256" is recommended by
+			 * RFC 4871, but you can use the weaker "sha1" if you would like.
+			 *
+			 * If you are using DomainKeys, which only supported SHA-1, this setting will
+			 * have no effect.  See RFC 4870.
+    			 */
+    			'dkim_hash' => 'sha256'
 		);
 		
 		if(isset($options['signed_headers'])){
@@ -385,8 +393,8 @@ class mail_signature {
 			$this -> _dkim_canonicalize_body_simple($body) :
 			$this -> _dkim_canonicalize_body_relaxed($body);
 		
-		// Base64 of packed binary SHA-1 hash of body
-		$bh = rtrim(chunk_split(base64_encode(pack("H*", sha1($body))), 64, "\r\n\t"));
+		// Base64 of packed binary hash of body
+		$bh = rtrim(chunk_split(base64_encode(pack("H*", hash($this->options['dkim_hash'],$body))), 64, "\r\n\t"));
 		$i_part =
 			($this -> options['identity'] == null) ?
 			'' :
@@ -395,7 +403,7 @@ class mail_signature {
 		$dkim_header =
 			'DKIM-Signature: '.
 				'v=1;'."\r\n\t".
-				'a=rsa-sha1;'."\r\n\t".
+				'a=rsa-' . $this -> options['dkim_hash'] . ';'."\r\n\t".
 				'q=dns/txt;'."\r\n\t".
 				's='.$this -> selector.';'."\r\n\t".
 				't='.time().';'."\r\n\t".
@@ -415,7 +423,16 @@ class mail_signature {
 		
 		// $signature is sent by reference in this function
 		$signature = '';
-		if(openssl_sign($to_be_signed, $signature, $this -> private_key)){
+		$signing_algorithm = null;
+
+		if ($this->options['dkim_hash'] === 'sha256') {
+			$signing_algorithm = OPENSSL_ALGO_SHA256;
+		} else if ($this->options['dkim_hash'] === 'sha1') {
+			$signing_algorithm = OPENSSL_ALGO_SHA1;
+		} else {
+			die('Unsupported dkim_hash value "' . $this->options['dkim_hash'] . '" -- DKIM only supports sha256 and sha1.');
+		}
+		if(openssl_sign($to_be_signed, $signature, $this -> private_key, $signing_algorithm)){
 			$dkim_header .= rtrim(chunk_split(base64_encode($signature), 64, "\r\n\t"))."\r\n";
 		}
 		else {
@@ -431,7 +448,7 @@ class mail_signature {
 		// Creating DomainKey-Signature
 		$domainkeys_header =
 			'DomainKey-Signature: '.
-				'a=rsa-sha1; '."\r\n\t".
+				'a=rsa-sha1;'."\r\n\t".
 				'c='.$this -> options['dk_canonicalization'].'; '."\r\n\t".
 				'd='.$this -> domain.'; '."\r\n\t".
 				's='.$this -> selector.'; '."\r\n\t".
@@ -444,12 +461,14 @@ class mail_signature {
 			$this -> _dk_canonicalize_simple($body, $sHeaders) :
 			$this -> _dk_canonicalize_nofws($body, $sHeaders);
 		
+		// $signature is sent by reference in this function
 		$signature = '';
+		
 		if(openssl_sign($to_be_signed, $signature, $this -> private_key, OPENSSL_ALGO_SHA1)){
-			
 			$domainkeys_header .= rtrim(chunk_split(base64_encode($signature), 64, "\r\n\t"))."\r\n";
 		}
 		else {
+			trigger_error(sprintf('Could not sign e-mail with DomainKeys : %s', $to_be_signed), E_USER_WARNING);
 			$domainkeys_header = '';
 		}
 		
